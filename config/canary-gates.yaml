@@ -1,0 +1,36 @@
+# Canary analysis gates (consumed by the release analysis job). Illustrative.
+# comparison: canary vs baseline over the SAME window; "delta_pts" = percentage points.
+analysis:
+  interval: 15m
+  min_sessions_per_arm: 300
+  min_evaluated_sessions_per_arm: 300
+  tests: { proportions: two_proportion_z, continuous: mann_whitney, alpha: 0.05 }
+
+stages:
+  - { name: shadow, weight: 0,   min_duration: 1h,  min_sessions: 500,  side_effects: stubbed }
+  - { name: c5,     weight: 5,   min_duration: 2h,  min_sessions: 1000, refund_cap_usd: 50 }
+  - { name: c25,    weight: 25,  min_duration: 24h, refund_cap_usd: 50 }
+  - { name: c50,    weight: 50,  min_duration: 24h, require_weekday_peak: true }
+  - { name: full,   weight: 100, post_check_after: 7d }   # lagging business metrics re-checked
+
+gates:
+  - { name: task_success,        metric: eval.task_success,     kind: quality,  hard: { delta_pts: -3.0 },  soft: { delta_pts: -1.5 } }
+  - { name: groundedness,        metric: eval.grounded,         kind: quality,  hard: { delta_pts: -3.0 },  soft: { delta_pts: -1.5 } }
+  - { name: action_safety,       metric: refund_audit_failures, kind: safety,   hard: { absolute_max: 0 } }
+  - { name: escalation_rate,     metric: share.escalated,       kind: business, hard: { ratio_max: 1.25 },  soft: { ratio_max: 1.10 } }
+  - { name: resolution_rate,     metric: share.resolved,        kind: business, hard: { delta_pts: -4.0 },  soft: { delta_pts: -2.0 } }
+  - { name: thumbs_down_rate,    metric: share.thumbs_down,     kind: business, hard: { ratio_max: 1.30 },  soft: { ratio_max: 1.15 } }
+  - { name: cost_per_resolution, metric: cost_per_resolution,   kind: cost,     hard: { ratio_max: 1.30 },  soft: { ratio_max: 1.15 } }
+  - { name: ttft_p95,            metric: ttft.p95,              kind: latency,  hard: { ratio_max: 1.25, absolute_max: 2.5 }, soft: { ratio_max: 1.10 } }
+  - { name: session_error_rate,  metric: share.error,           kind: errors,   hard: { delta_pts: 0.5 },   soft: { delta_pts: 0.2 } }
+  - { name: loop_rate,           metric: rate.budget_exhausted, kind: control,  hard: { ratio_max: 2.0 },   soft: { ratio_max: 1.5 } }
+
+on_hard_fail:
+  - set_weight: 0
+  - if_gate: action_safety
+    then: [ disable_flag: agent.refunds_enabled, handoff_inflight: true, open_incident: sev2 ]
+  - notify: "#resolve-releases"
+  - attach: [ failed_gate_query, example_trace_ids: 5 ]
+on_soft_fail:
+  - hold_stage: true
+  - page: agent-eng

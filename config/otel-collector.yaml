@@ -1,0 +1,63 @@
+# OpenTelemetry Collector (contrib) - illustrative. No secrets: endpoints/keys come from env.
+receivers:
+  otlp:
+    protocols: { grpc: { endpoint: 0.0.0.0:4317 } }
+
+processors:
+  memory_limiter: { check_interval: 1s, limit_percentage: 80 }
+
+  # Defence in depth: SDK should never emit prompt text, but strip it if it does.
+  attributes/redact:
+    actions:
+      - { key: gen_ai.prompt,      action: delete }
+      - { key: gen_ai.completion,  action: delete }
+      - { key: user.email,         action: delete }
+      - { key: tenant.id,          action: hash }
+  redaction:
+    allow_all_keys: true
+    blocked_values:
+      - "[0-9]{13,19}"                                # card-number-like
+      - "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}"  # emails
+
+  tail_sampling:
+    decision_wait: 60s          # sessions are long; wait for agent.outcome span
+    num_traces: 200000
+    policies:
+      - { name: errors,       type: status_code, status_code: { status_codes: [ERROR] } }
+      - { name: escalated,    type: string_attribute, string_attribute: { key: outcome, values: [escalated, budget_exhausted, error] } }
+      - { name: side_effects, type: string_attribute, string_attribute: { key: side_effect, values: [irreversible] } }
+      - { name: guardrail,    type: string_attribute, string_attribute: { key: decision, values: [block, rewrite] } }
+      - { name: slow,         type: latency, latency: { threshold_ms: 45000 } }
+      - { name: canary,       type: string_attribute, string_attribute: { key: agent.release, values: ["${env:CANARY_RELEASE}"] } }
+      - { name: baseline,     type: probabilistic, probabilistic: { sampling_percentage: 10 } }
+
+  batch: {}
+
+connectors:
+  spanmetrics:
+    histogram: { explicit: { buckets: [100ms, 250ms, 500ms, 1s, 2.5s, 5s, 10s, 30s, 60s] } }
+    dimensions: [ { name: tool.name }, { name: gen_ai.request.model }, { name: agent.release } ]
+
+exporters:
+  otlp/tempo:           { endpoint: "${env:TEMPO_ENDPOINT}" }
+  prometheusremotewrite: { endpoint: "${env:MIMIR_REMOTE_WRITE_URL}" }
+  loki:                 { endpoint: "${env:LOKI_ENDPOINT}" }
+
+service:
+  pipelines:
+    traces/in:
+      receivers: [otlp]
+      processors: [memory_limiter, attributes/redact, redaction]
+      exporters: [spanmetrics]               # metrics from 100% of spans, pre-sampling
+    traces/out:
+      receivers: [otlp]
+      processors: [memory_limiter, attributes/redact, redaction, tail_sampling, batch]
+      exporters: [otlp/tempo]
+    metrics:
+      receivers: [otlp, spanmetrics]
+      processors: [memory_limiter, batch]
+      exporters: [prometheusremotewrite]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, attributes/redact, redaction, batch]
+      exporters: [loki]

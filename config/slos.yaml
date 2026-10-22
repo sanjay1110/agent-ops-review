@@ -1,0 +1,65 @@
+# SLO definitions (OpenSLO v1). Illustrative; window 28d rolling.
+apiVersion: openslo/v1
+kind: SLO
+metadata: { name: resolve-availability }
+spec:
+  service: resolve-agent
+  budgetingMethod: Occurrences
+  timeWindow: [{ duration: 28d, isRolling: true }]
+  indicator:
+    metadata: { name: session-availability }
+    spec:
+      ratioMetric:
+        counter: true
+        good:  { metricSource: { type: Prometheus, spec: { query: 'sum(agent_sessions_total{outcome!="error"})' } } }
+        total: { metricSource: { type: Prometheus, spec: { query: 'sum(agent_sessions_total)' } } }
+  objectives: [{ displayName: availability, target: 0.995 }]
+---
+apiVersion: openslo/v1
+kind: SLO
+metadata: { name: resolve-ttft-p95 }
+spec:
+  service: resolve-agent
+  budgetingMethod: Occurrences
+  timeWindow: [{ duration: 28d, isRolling: true }]
+  indicator:
+    metadata: { name: ttft-under-2500ms }
+    spec:
+      ratioMetric:
+        counter: true
+        good:  { metricSource: { type: Prometheus, spec: { query: 'sum(agent_ttft_seconds_bucket{le="2.5"})' } } }
+        total: { metricSource: { type: Prometheus, spec: { query: 'sum(agent_ttft_seconds_count)' } } }
+  objectives: [{ displayName: ttft-p95, target: 0.95 }]
+---
+apiVersion: openslo/v1
+kind: SLO
+metadata: { name: resolve-task-success }
+spec:
+  service: resolve-agent
+  description: Online-eval judged success on sampled sessions (resolved correctly OR escalated correctly)
+  budgetingMethod: Occurrences
+  timeWindow: [{ duration: 28d, isRolling: true }]
+  indicator:
+    metadata: { name: judged-task-success }
+    spec:
+      ratioMetric:
+        counter: true
+        good:  { metricSource: { type: Prometheus, spec: { query: 'sum(agent_eval_score_count{dimension="task_success"}) - sum(agent_eval_score_bucket{dimension="task_success",le="0.5"})' } } }
+        total: { metricSource: { type: Prometheus, spec: { query: 'sum(agent_eval_score_count{dimension="task_success"})' } } }
+  objectives: [{ displayName: task-success, target: 0.88 }]
+---
+apiVersion: openslo/v1
+kind: SLO
+metadata: { name: resolve-tool-reliability }
+spec:
+  service: resolve-agent
+  budgetingMethod: Occurrences
+  timeWindow: [{ duration: 28d, isRolling: true }]
+  indicator:
+    metadata: { name: tool-call-success }
+    spec:
+      ratioMetric:
+        counter: true
+        good:  { metricSource: { type: Prometheus, spec: { query: 'sum(agent_tool_calls_total{status=~"ok|business_reject"})' } } }
+        total: { metricSource: { type: Prometheus, spec: { query: 'sum(agent_tool_calls_total)' } } }
+  objectives: [{ displayName: tool-reliability, target: 0.99 }]

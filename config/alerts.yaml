@@ -1,0 +1,70 @@
+# Prometheus recording + alerting rules (illustrative thresholds).
+# Burn-rate alerts follow the multi-window pattern from the Google SRE workbook.
+groups:
+- name: resolve-recording
+  rules:
+  - record: agent:availability_errors:ratio_rate5m
+    expr: sum(rate(agent_sessions_total{outcome="error"}[5m])) / sum(rate(agent_sessions_total[5m]))
+  - record: agent:availability_errors:ratio_rate1h
+    expr: sum(rate(agent_sessions_total{outcome="error"}[1h])) / sum(rate(agent_sessions_total[1h]))
+  - record: agent:ttft_slow:ratio_rate5m
+    expr: 1 - (sum(rate(agent_ttft_seconds_bucket{le="2.5"}[5m])) / sum(rate(agent_ttft_seconds_count[5m])))
+  - record: agent:ttft_slow:ratio_rate1h
+    expr: 1 - (sum(rate(agent_ttft_seconds_bucket{le="2.5"}[1h])) / sum(rate(agent_ttft_seconds_count[1h])))
+  - record: agent:task_fail:ratio_rate6h
+    expr: sum(rate(agent_eval_score_bucket{dimension="task_success",le="0.5"}[6h])) / sum(rate(agent_eval_score_count{dimension="task_success"}[6h]))
+  - record: agent:task_fail:ratio_rate1d
+    expr: sum(rate(agent_eval_score_bucket{dimension="task_success",le="0.5"}[1d])) / sum(rate(agent_eval_score_count{dimension="task_success"}[1d]))
+  - record: agent:cost_usd:rate1h
+    expr: sum(rate(agent_cost_usd_total[1h])) * 3600
+  - record: agent:cost_per_resolution:1h
+    expr: sum(rate(agent_cost_usd_total[1h])) / sum(rate(agent_sessions_total{outcome="resolved"}[1h]))
+
+- name: resolve-alerts
+  rules:
+  # --- Availability: page on fast burn (14.4x budget for 99.5%)
+  - alert: AgentAvailabilitySLOBurn
+    expr: agent:availability_errors:ratio_rate1h > (14.4 * 0.005) and agent:availability_errors:ratio_rate5m > (14.4 * 0.005)
+    for: 2m
+    labels: { severity: page, team: platform-sre, runbook: runbooks/README.md }
+
+  # --- Latency (runbook 01)
+  - alert: AgentTTFTSLOBurn
+    expr: agent:ttft_slow:ratio_rate1h > (6 * 0.05) and agent:ttft_slow:ratio_rate5m > (6 * 0.05)
+    for: 5m
+    labels: { severity: page, team: platform-sre, runbook: runbooks/01-latency-regression.md }
+
+  # --- Cost (runbook 02)
+  - alert: AgentCostSpike
+    expr: agent:cost_usd:rate1h > 2 * (agent:cost_usd:rate1h offset 1w)
+    for: 30m
+    labels: { severity: page, team: platform-sre, runbook: runbooks/02-cost-spike.md }
+  - alert: AgentCostPerResolutionHigh
+    expr: agent:cost_per_resolution:1h > 0.12
+    for: 1h
+    labels: { severity: ticket, team: agent-eng, runbook: runbooks/02-cost-spike.md }
+
+  # --- Quality / drift (runbook 03). Slower windows: eval is sampled.
+  - alert: AgentTaskSuccessSLOBurn
+    expr: agent:task_fail:ratio_rate6h > (6 * 0.12 / 4) and agent:task_fail:ratio_rate1d > (3 * 0.12 / 4)
+    for: 30m
+    labels: { severity: page, team: agent-eng, runbook: runbooks/03-model-drift.md }
+  - alert: AgentEscalationRateHigh
+    expr: |
+      (sum(rate(agent_sessions_total{outcome="escalated"}[1h])) / sum(rate(agent_sessions_total[1h])))
+      > 1.25 * (sum(rate(agent_sessions_total{outcome="escalated"}[7d])) / sum(rate(agent_sessions_total[7d])))
+    for: 1h
+    labels: { severity: page, team: agent-eng, runbook: runbooks/03-model-drift.md }
+  - alert: AgentInputDrift
+    expr: agent_input_embedding_drift{window="24h"} > 0.2
+    for: 2h
+    labels: { severity: ticket, team: agent-eng, runbook: runbooks/03-model-drift.md }
+
+  # --- Loops / unsafe actions (runbook 04)
+  - alert: AgentBudgetExhaustionSpike
+    expr: sum(rate(agent_budget_exhausted_total[15m])) > 3 * sum(rate(agent_budget_exhausted_total[7d]))
+    for: 10m
+    labels: { severity: page, team: agent-eng, runbook: runbooks/04-runaway-loop-unsafe-action.md }
+  - alert: AgentRefundPolicyViolation
+    expr: increase(agent_refund_audit_failures_total[15m]) > 0
+    labels: { severity: page, priority: sev1, team: agent-eng, runbook: runbooks/04-runaway-loop-unsafe-action.md }
